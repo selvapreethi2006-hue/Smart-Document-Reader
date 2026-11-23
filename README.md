@@ -1,25 +1,34 @@
-<<<<<<< HEAD
 # Smart Document Reader & Data Extractor
 
-An AI-assisted document processing app built with **Python + Streamlit**.  
-Upload a PDF or image, extract text (with OCR fallback for scanned pages),
-generate a summary, pull out names / emails / phones / dates / addresses,
-search the text, and export the results.
-
----
+An AI-powered document processing app built with **Python + Streamlit**.
+Upload a PDF or image → extract text (OCR when needed) → get a summary,
+structured fields, table extraction, chat Q&A, statistics, and downloads.
 
 ## Features
 
-- **Upload** PDF, JPG, JPEG, PNG (validated, size-capped)
-- **Text extraction**
-  - Digital PDFs → PyMuPDF (`fitz`)
-  - Scanned PDFs / images → OpenCV preprocessing + Tesseract OCR
-- **Structured info** via regex: names, emails, phones, dates, addresses
-  (missing fields are simply empty — never fabricated)
-- **Extractive summary** with key points
-- **Keyword search** with highlighted snippets
-- **Exports**: `.txt`, `.csv`, `.json`
+- 📄 **Single & batch upload** — process up to 5 files at once
+- 🧠 **Extractive summary** with key points (offline, no LLM)
+- 🔎 **Structured info** — names, emails, phones, dates, addresses
+- 📊 **Table extraction** — pulled from PDFs as DataFrames, downloadable as CSV
+- 💬 **Chat with document** — ask a question, get the most relevant sentences
+- 📈 **Document statistics** — word count, reading time, readability, top words
+- 🌐 **Language detection** — automatic with confidence score
+- 🔍 **Keyword search** with highlighted snippets
+- ⬇️ **Exports** — TXT, CSV, JSON
 
+## Tech Stack
+
+- Streamlit (UI)
+- pdfplumber + pypdfium2 (PDF text & tables)
+- RapidOCR + ONNX Runtime (image OCR, no Tesseract needed)
+- Pillow + NumPy (image handling)
+- pandas (data processing)
+- langdetect (language detection)
+
+## Installation
+
+```powershell
+python -m pip install -r requirements.txt
 ---
 
 ## 1. Install prerequisites
