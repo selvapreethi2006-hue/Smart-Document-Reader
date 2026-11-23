@@ -120,6 +120,4 @@ requirements.txt
 .gitignore
 ```
 =======
-# Smart-Document-Reader
-An AI-powered document reader and data extraction system that extracts text and useful information from documents using Python and OCR technology.
->>>>>>> b5861ab580af6402fd6d2192d9a7f4be89139317
+
