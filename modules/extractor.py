@@ -1,5 +1,4 @@
-"""Text extraction: pdfplumber (PDFs) + RapidOCR (images/scanned PDFs).
-Pure pip install — no Tesseract, no system binaries required."""
+"""Text extraction: pdfplumber (PDFs) + RapidOCR (images/scanned PDFs)."""
 
 import io
 import os
@@ -32,7 +31,8 @@ def _ocr_image(img: Image.Image) -> str:
 
 
 def extract_from_pdf(file_bytes: bytes) -> dict:
-    pages, ocr_pages = [], 0
+    """Extract text + tables from PDF."""
+    pages, ocr_pages, tables = [], 0, []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for idx, page in enumerate(pdf.pages, start=1):
             text = (page.extract_text() or "").strip()
@@ -42,17 +42,37 @@ def extract_from_pdf(file_bytes: bytes) -> dict:
                 if text:
                     ocr_pages += 1
             pages.append({"page": idx, "text": text})
+
+            # Table extraction (works only on digital PDFs)
+            try:
+                for t in page.extract_tables():
+                    if t and len(t) > 1:
+                        tables.append({"page": idx, "rows": t})
+            except Exception:
+                pass
+
         page_count = len(pdf.pages)
+
     combined = "\n\n".join(p["text"] for p in pages if p["text"])
-    return {"text": combined, "pages": pages,
-            "page_count": page_count, "ocr_pages": ocr_pages}
+    return {
+        "text": combined,
+        "pages": pages,
+        "page_count": page_count,
+        "ocr_pages": ocr_pages,
+        "tables": tables,
+    }
 
 
 def extract_from_image(file_bytes: bytes) -> dict:
     pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
     text = _ocr_image(pil)
-    return {"text": text, "pages": [{"page": 1, "text": text}],
-            "page_count": 1, "ocr_pages": 1 if text else 0}
+    return {
+        "text": text,
+        "pages": [{"page": 1, "text": text}],
+        "page_count": 1,
+        "ocr_pages": 1 if text else 0,
+        "tables": [],
+    }
 
 
 def extract_text(file_bytes: bytes, filename: str) -> dict:
@@ -62,3 +82,19 @@ def extract_text(file_bytes: bytes, filename: str) -> dict:
     if ext in (".jpg", ".jpeg", ".png"):
         return extract_from_image(file_bytes)
     raise ValueError(f"Unsupported file type: {ext}")
+
+
+def extract_batch(files: list) -> list:
+    """
+    files: list of (filename, bytes) tuples.
+    Returns list of {'filename': ..., 'result': extract_text(...)} dicts.
+    Errors on individual files are captured, not raised.
+    """
+    out = []
+    for name, data in files:
+        try:
+            result = extract_text(data, name)
+            out.append({"filename": name, "result": result, "error": None})
+        except Exception as exc:
+            out.append({"filename": name, "result": None, "error": str(exc)})
+    return out
