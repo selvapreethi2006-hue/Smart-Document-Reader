@@ -1,9 +1,8 @@
-"""Smart Document Reader & Data Extractor — Streamlit app (v3).
-Adds: PDF report, entity extraction, keywords, doc compare,
-sentiment analysis, PII redaction."""
+"""Smart Document Reader & Data Extractor — Streamlit app (v5)."""
 
 import os
 import re
+import json
 import streamlit as st
 import pandas as pd
 
@@ -20,6 +19,19 @@ from modules.keyword_extractor import extract_keywords, extract_phrases
 from modules.sentiment import analyse_sentiment
 from modules.doc_compare import compare_documents
 from modules.redactor import redact_text
+from modules.timeline import build_timeline, timeline_to_csv
+from modules.contact_card import build_contacts, card_to_vcard
+from modules.anomaly_alerts import detect_anomalies
+from modules.duplicate_check import similarity as doc_similarity
+from modules.qa_history import add_to_history, history_to_json, history_to_markdown
+from modules.ai_chat import answer_with_context
+
+# NEW modules
+from modules.tts import synthesize as tts_synthesize
+from modules.smart_highlights import find_highlights, highlights_to_csv
+from modules.doc_registry import add_to_registry, find_duplicates, clear_registry
+from modules.regex_playground import run_regex, COMMON_PATTERNS
+from modules.toc_detector import detect_toc
 
 ALLOWED_TYPES = ["pdf", "jpg", "jpeg", "png"]
 MAX_MB = 25
@@ -36,18 +48,22 @@ def init_state():
         "extracted_text": "", "pages": [], "tables": [], "meta": {},
         "info": {}, "summary": {}, "stats": {}, "language": {},
         "entities": {}, "keywords": [], "phrases": [],
-        "sentiment": {}, "redacted": {},
+        "sentiment": {}, "redacted": {}, "timeline": [],
+        "contacts": [], "alerts": [],
+        "highlights": [], "toc": [],
         "filename": "", "batch": [],
-        "compare_a": "", "compare_b": "",
+        "chat_messages": [], "chat_history_questions": [],
+        "registry": [],
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
 
 def reset_state():
-    for key in ("extracted_text", "filename", "compare_a", "compare_b"):
+    for key in ("extracted_text", "filename"):
         st.session_state[key] = ""
-    for key in ("pages", "tables", "batch", "keywords", "phrases"):
+    for key in ("pages", "tables", "batch", "keywords", "phrases",
+                "timeline", "contacts", "alerts", "highlights", "toc"):
         st.session_state[key] = []
     for key in ("meta", "info", "summary", "stats", "language",
                 "entities", "sentiment", "redacted"):
@@ -74,6 +90,22 @@ def _apply_result(name, result):
     st.session_state.phrases = extract_phrases(text)
     st.session_state.sentiment = analyse_sentiment(text)
     st.session_state.redacted = redact_text(text)
+    st.session_state.timeline = build_timeline(text)
+    st.session_state.contacts = build_contacts(text)
+    st.session_state.alerts = detect_anomalies(text, st.session_state.info,
+                                                st.session_state.stats)
+    st.session_state.highlights = find_highlights(text)
+    st.session_state.toc = detect_toc(text)
+
+    # Registry
+    st.session_state.registry = add_to_registry(
+        st.session_state.registry,
+        name, text,
+        st.session_state.stats.get("words", 0),
+        st.session_state.language.get("name", "—"),
+    )
+    dups = find_duplicates(st.session_state.registry, text)
+    st.session_state.meta["duplicate_count"] = len(dups) if dups else 0
 
 
 def render_upload():
@@ -141,6 +173,7 @@ def render_details():
     lang = st.session_state.language
     stats = st.session_state.stats
     senti = st.session_state.sentiment.get("overall") or {}
+    alerts = st.session_state.alerts
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("File", meta.get("filename", "—"))
     c2.metric("Pages", meta.get("page_count", 0))
@@ -149,9 +182,11 @@ def render_details():
     c5.metric("Language", f"{lang.get('name', '—')} ({lang.get('confidence', 0)})")
     if senti:
         c6.metric("Mood", senti.get("label", "—"))
+    if alerts:
+        st.warning(f"⚠️ {len(alerts)} alert(s) — see **🚨 Alerts** tab")
 
 
-# ---------------- Tabs ----------------
+# ---- Existing tabs (unchanged behavior) ----
 
 def tab_text():
     if st.session_state.pages:
@@ -241,20 +276,74 @@ def tab_tables():
 
 
 def tab_chat():
-    st.markdown("Ask a question about the document. "
-                "The app finds the most relevant sentences — no internet, no LLM.")
-    question = st.text_input("Your question", key="qa_question")
-    if not question:
-        st.caption("Example: 'What is the invoice number?'")
-        return
-    results = answer_question(st.session_state.extracted_text, question)
-    if not results:
-        st.warning("No relevant sentences found.")
-        return
-    for i, (score, sentence) in enumerate(results, start=1):
-        st.markdown(f"**Answer {i}** (match score: {score:.2f})")
-        st.write(sentence)
-        st.divider()
+    st.markdown("Ask about your document. Follow-ups supported. "
+                "Every answer shows source evidence.")
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+    if "chat_history_questions" not in st.session_state:
+        st.session_state.chat_history_questions = []
+
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("evidence"):
+                with st.expander(f"📑 Source evidence ({len(msg['evidence'])})"):
+                    for ev in msg["evidence"]:
+                        page = f"Page {ev['page']}" if ev.get("page") else "Page ?"
+                        st.markdown(f"**{page}** — score {ev['score']}")
+                        st.caption(ev["snippet"])
+
+    question = st.chat_input("Ask a question…")
+    if question:
+        st.session_state.chat_messages.append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
+        result = answer_with_context(
+            st.session_state.extracted_text, question,
+            st.session_state.chat_history_questions,
+            pages=st.session_state.pages, top_k=3,
+        )
+        if not result["answers"]:
+            content, evidence = "No relevant sentences found.", []
+        else:
+            tag = " 🔁 *(follow-up)*" if result["is_followup"] else ""
+            lines = [f"Here's what I found{tag}:"]
+            for i, a in enumerate(result["answers"], 1):
+                pg = f" (page {a['page']})" if a["page"] else ""
+                lines.append(f"\n**{i}.**{pg} {a['sentence']}")
+            content = "\n".join(lines)
+            evidence = result["answers"]
+            st.session_state.chat_history_questions.append({
+                "question": question,
+                "answers": [(a["score"], a["sentence"]) for a in evidence],
+            })
+        st.session_state.chat_messages.append({
+            "role": "assistant", "content": content, "evidence": evidence,
+        })
+        with st.chat_message("assistant"):
+            st.markdown(content)
+            if evidence:
+                with st.expander(f"📑 Source evidence ({len(evidence)})"):
+                    for ev in evidence:
+                        page = f"Page {ev['page']}" if ev.get("page") else "Page ?"
+                        st.markdown(f"**{page}** — score {ev['score']}")
+                        st.caption(ev["snippet"])
+
+    if st.session_state.chat_messages:
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🗑️ Clear chat"):
+                st.session_state.chat_messages = []
+                st.session_state.chat_history_questions = []
+                st.rerun()
+        with col2:
+            if st.session_state.chat_history_questions:
+                st.download_button(
+                    "⬇️ Q&A history (.json)",
+                    data=json.dumps(st.session_state.chat_history_questions,
+                                    indent=2, default=str).encode("utf-8"),
+                    file_name="qa_history.json", mime="application/json",
+                )
 
 
 def tab_stats():
@@ -274,35 +363,32 @@ def tab_stats():
     if readability:
         c7.metric("Reading ease", f"{readability['flesch_ease']} / 100",
                   readability["flesch_label"])
-        st.caption(f"Flesch-Kincaid Grade Level: {readability['fk_grade']}")
     top = stats.get("top_words") or []
     if top:
-        st.markdown("**Top 10 most frequent words**")
-        df = pd.DataFrame(top)
-        st.bar_chart(df.set_index("word")["count"])
+        st.markdown("**Top 10 words**")
+        st.bar_chart(pd.DataFrame(top).set_index("word")["count"])
 
 
 def tab_search():
-    query = st.text_input("Search keyword(s) in extracted text")
+    query = st.text_input("Search keyword(s)")
     text = st.session_state.extracted_text
     if query and text:
-        pattern = re.compile(re.escape(query), re.IGNORECASE)
-        matches = list(pattern.finditer(text))
-        st.write(f"**{len(matches)} match(es) found**")
-        for i, m in enumerate(matches[:50], start=1):
-            s = max(0, m.start() - 60)
-            e = min(len(text), m.end() + 60)
+        pat = re.compile(re.escape(query), re.IGNORECASE)
+        matches = list(pat.finditer(text))
+        st.write(f"**{len(matches)} match(es)**")
+        for i, m in enumerate(matches[:50], 1):
+            s, e = max(0, m.start()-60), min(len(text), m.end()+60)
             snippet = text[s:e].replace("\n", " ")
-            highlighted = pattern.sub(lambda mm: f"**{mm.group(0)}**", snippet)
-            st.markdown(f"{i}. …{highlighted}…")
+            hl = pat.sub(lambda x: f"**{x.group(0)}**", snippet)
+            st.markdown(f"{i}. …{hl}…")
     elif query:
-        st.info("No text available to search.")
+        st.info("No text to search.")
 
 
 def tab_batch():
     batch = st.session_state.batch
     if not batch:
-        st.info("Upload multiple files and click Extract.")
+        st.info("Upload multiple files.")
         return
     df = pd.DataFrame([
         {"File": b["filename"], "Words": b["word_count"],
@@ -311,7 +397,7 @@ def tab_batch():
         for b in batch
     ])
     st.dataframe(df, width="stretch")
-    st.download_button("Download batch summary (CSV)",
+    st.download_button("⬇️ Batch summary (CSV)",
                        data=df.to_csv(index=False).encode("utf-8"),
                        file_name="batch_summary.csv", mime="text/csv")
 
@@ -319,29 +405,24 @@ def tab_batch():
 def tab_report():
     meta = st.session_state.meta
     if not meta:
-        st.info("Upload and extract a document first.")
+        st.info("Upload first.")
         return
-    st.markdown("Download a complete PDF report containing summary, "
-                "structured info, tables, and statistics.")
     if st.button("📄 Generate PDF report"):
         try:
             pdf_bytes = generate_report(
-                meta=meta,
-                summary=st.session_state.summary,
-                info=st.session_state.info,
-                stats=st.session_state.stats,
+                meta=meta, summary=st.session_state.summary,
+                info=st.session_state.info, stats=st.session_state.stats,
                 language=st.session_state.language,
                 tables=st.session_state.tables,
                 filename=st.session_state.filename,
             )
             st.download_button(
-                "⬇️ Download report.pdf",
-                data=pdf_bytes,
+                "⬇️ Download report.pdf", data=pdf_bytes,
                 file_name=f"report_{os.path.splitext(st.session_state.filename)[0]}.pdf",
                 mime="application/pdf",
             )
         except Exception as exc:
-            st.error(f"Report generation failed: {exc}")
+            st.error(f"Report failed: {exc}")
 
 
 def tab_entities():
@@ -350,15 +431,11 @@ def tab_entities():
         st.info("No business entities detected.")
         return
     labels = {
-        "invoice_numbers": "🧾 Invoice Numbers",
-        "gst_numbers": "🏛️ GST Numbers",
-        "pan_numbers": "🪪 PAN Numbers",
-        "aadhaar_numbers": "🆔 Aadhaar Numbers",
-        "ifsc_codes": "🏦 IFSC Codes",
-        "amounts": "💰 Amounts",
-        "urls": "🔗 URLs",
-        "percentages": "📊 Percentages",
-        "vehicle_numbers": "🚗 Vehicle Numbers",
+        "invoice_numbers": "🧾 Invoice #", "gst_numbers": "🏛️ GST",
+        "pan_numbers": "🪪 PAN", "aadhaar_numbers": "🆔 Aadhaar",
+        "ifsc_codes": "🏦 IFSC", "amounts": "💰 Amounts",
+        "urls": "🔗 URLs", "percentages": "📊 Percentages",
+        "vehicle_numbers": "🚗 Vehicles",
     }
     cols = st.columns(2)
     for i, (key, label) in enumerate(labels.items()):
@@ -375,156 +452,8 @@ def tab_keywords():
     kws = st.session_state.keywords
     phrases = st.session_state.phrases
     if not kws and not phrases:
-        st.info("No keywords available.")
+        st.info("No keywords.")
         return
     if kws:
         st.markdown("**Top keywords (TF-IDF)**")
-        df = pd.DataFrame(kws)
-        st.dataframe(df, width="stretch")
-        st.bar_chart(df.set_index("term")["score"])
-    if phrases:
-        st.markdown("**Top phrases**")
-        p_df = pd.DataFrame(phrases)
-        st.dataframe(p_df, width="stretch")
-
-
-def tab_sentiment():
-    senti = st.session_state.sentiment
-    if not senti or not senti.get("overall"):
-        st.info("No sentiment data.")
-        return
-    overall = senti["overall"]
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Overall mood", overall["label"])
-    c2.metric("Polarity", overall["polarity"],
-              f"{overall['polarity']:+.2f}")
-    c3.metric("Subjectivity", overall["subjectivity"])
-    counts = overall.get("counts") or {}
-    if counts:
-        df = pd.DataFrame(
-            [{"Label": k, "Count": v} for k, v in counts.items()]
-        )
-        st.bar_chart(df.set_index("Label")["Count"])
-    st.markdown("**Sentence-level sentiment**")
-    rows = senti.get("sentences") or []
-    if rows:
-        st.dataframe(
-            pd.DataFrame([
-                {"Sentence": r["sentence"],
-                 "Polarity": r["polarity"],
-                 "Label": r["label"]}
-                for r in rows[:50]
-            ]),
-            width="stretch",
-        )
-
-
-def tab_compare():
-    st.markdown("Compare two documents — paste text or upload a second file.")
-    st.text_area("Document A (paste)", key="cmp_a", height=150)
-    st.text_area("Document B (paste)", key="cmp_b", height=150)
-    if st.button("Compare documents"):
-        a = st.session_state.get("cmp_a", "")
-        b = st.session_state.get("cmp_b", "")
-        if not a.strip() or not b.strip():
-            st.warning("Both documents must have content.")
-            return
-        result = compare_documents(a, b)
-        if not result:
-            st.warning("Comparison failed.")
-            return
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Overall", f"{result['overall_similarity']*100:.1f}%")
-        c2.metric("Character", f"{result['char_similarity']*100:.1f}%")
-        c3.metric("Jaccard", f"{result['jaccard_similarity']*100:.1f}%")
-        c4.metric("Cosine", f"{result['cosine_similarity']*100:.1f}%")
-        st.markdown(f"**Only in A** ({len(result['only_in_first'])}): "
-                    + ", ".join(result["only_in_first"]))
-        st.markdown(f"**Only in B** ({len(result['only_in_second'])}): "
-                    + ", ".join(result["only_in_second"]))
-        st.markdown(f"**Shared** ({len(result['shared_words'])}): "
-                    + ", ".join(result["shared_words"]))
-
-
-def tab_redact():
-    red = st.session_state.redacted
-    if not red or not red.get("redacted"):
-        st.info("Upload and extract a document first.")
-        return
-    st.markdown("This tab shows a **privacy-safe version** of the document "
-                "with emails, phones, names, and addresses masked.")
-    summary = red.get("summary", {})
-    if summary:
-        st.markdown("**Items redacted:**")
-        for k, v in summary.items():
-            st.markdown(f"- {k.title()}: {v}")
-    st.text_area("Redacted text", red["redacted"], height=400)
-    st.download_button(
-        "⬇️ Download redacted text (.txt)",
-        data=red["redacted"].encode("utf-8"),
-        file_name="redacted_document.txt",
-        mime="text/plain",
-    )
-
-
-def tab_export():
-    text = st.session_state.extracted_text
-    info = st.session_state.info or {}
-    if not text:
-        st.info("Nothing to export yet.")
-        return
-    base = os.path.splitext(st.session_state.filename or "document")[0]
-    st.download_button("Download text (.txt)",
-                       data=text_to_txt_bytes(text),
-                       file_name=f"{base}.txt", mime="text/plain")
-    st.download_button("Download structured info (.json)",
-                       data=info_to_json_bytes(info),
-                       file_name=f"{base}_info.json", mime="application/json")
-    st.download_button("Download structured info (.csv)",
-                       data=info_to_csv_bytes(info),
-                       file_name=f"{base}_info.csv", mime="text/csv")
-
-
-def render_tabs():
-    tabs = st.tabs([
-        "📄 Text", "🧠 Summary", "🔎 Info", "📊 Tables", "💬 Chat",
-        "📈 Stats", "🧾 Entities", "🔑 Keywords", "😊 Sentiment",
-        "🔀 Compare", "🕵️ Redact", "📄 Report", "🔍 Search",
-        "📦 Batch", "⬇️ Download",
-    ])
-    renderers = [
-        tab_text, tab_summary, tab_info, tab_tables, tab_chat,
-        tab_stats, tab_entities, tab_keywords, tab_sentiment,
-        tab_compare, tab_redact, tab_report, tab_search,
-        tab_batch, tab_export,
-    ]
-    for tab, fn in zip(tabs, renderers):
-        with tab:
-            fn()
-
-
-def main():
-    init_state()
-    st.title("📄 Smart Document Reader & Data Extractor")
-    st.caption("Upload → Extract → Analyse → Report → Export.")
-
-    mode, uploaded = render_upload()
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🚀 Extract", type="primary", disabled=uploaded is None):
-            if mode == "single":
-                run_single(uploaded)
-            else:
-                run_batch(uploaded)
-    with col2:
-        if st.button("♻️ Reset"):
-            reset_state()
-            st.rerun()
-
-    render_details()
-    st.divider()
-    render_tabs()
-
-
-if __name__ == "__main__":
-    main()
+        df = pd

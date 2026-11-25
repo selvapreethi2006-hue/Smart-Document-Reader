@@ -5,6 +5,18 @@ import os
 
 import pdfplumber
 from PIL import Image
+import logging
+import warnings
+
+# Silence harmless pdfminer warnings about broken font descriptors
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
+logging.getLogger("pdfminer.pdfinterp").setLevel(logging.ERROR)
+logging.getLogger("pdfminer.converter").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*FontBBox.*")
+
+import pdfplumber
+from PIL import Image
+# ... rest of your imports
 
 _engine = None
 
