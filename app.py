@@ -1,4 +1,4 @@
-"""Smart Document Reader & Data Extractor — Streamlit app (final)."""
+"""Smart Document Reader & Data Extractor — Streamlit app (Full v6 with Database)."""
 
 import os
 import re
@@ -28,6 +28,10 @@ from modules.smart_highlights import find_highlights, highlights_to_csv
 from modules.doc_registry import add_to_registry, find_duplicates, clear_registry
 from modules.regex_playground import run_regex, COMMON_PATTERNS
 from modules.toc_detector import detect_toc
+from modules.database import (
+    save_document, save_chat, get_all_documents,
+    get_document, get_chats_for_doc, search_documents, delete_document
+)
 
 ALLOWED_TYPES = ["pdf", "jpg", "jpeg", "png"]
 MAX_MB = 25
@@ -45,8 +49,7 @@ def init_state():
         "info": {}, "summary": {}, "stats": {}, "language": {},
         "entities": {}, "keywords": [], "phrases": [],
         "sentiment": {}, "redacted": {}, "timeline": [],
-        "contacts": [], "alerts": [],
-        "highlights": [], "toc": [],
+        "contacts": [], "alerts": [], "highlights": [], "toc": [],
         "filename": "", "batch": [],
         "chat_messages": [], "chat_history_questions": [],
         "registry": [],
@@ -179,7 +182,7 @@ def render_details():
     if senti:
         c6.metric("Mood", senti.get("label", "—"))
     if alerts:
-        st.warning(f"⚠️ {len(alerts)} alert(s) — see **🚨 Alerts** tab")
+        st.warning(f"⚠️ {len(alerts)} alert(s) — see 🚨 Alerts")
 
 
 # ------------------- TABS -------------------
@@ -313,6 +316,15 @@ def tab_chat():
                 "question": question,
                 "answers": [(a["score"], a["sentence"]) for a in evidence],
             })
+            # Auto-save chat to DB if document exists
+            try:
+                docs = get_all_documents()
+                current_doc = next((d for d in docs if d['filename'] == st.session_state.filename), None)
+                if current_doc:
+                    save_chat(current_doc['id'], question, content)
+            except Exception:
+                pass
+
         st.session_state.chat_messages.append({
             "role": "assistant", "content": content, "evidence": evidence,
         })
@@ -682,26 +694,82 @@ def tab_export():
                        file_name=f"{base}_info.csv", mime="text/csv")
 
 
-def render_tabs():
-    tabs = st.tabs([
-        "📄 Text", "🧠 Summary", "🔎 Info", "📊 Tables", "💬 Chat",
-        "📈 Stats", "🧾 Entities", "🔑 Keywords", "😊 Sentiment",
-        "🔀 Compare", "🕵️ Redact", "⏱️ Timeline", "👤 Contacts",
-        "🚨 Alerts", "✨ Highlights", "📚 Outline", "🔊 Listen",
-        "🧪 Regex", "📇 Registry", "📄 Report", "🔍 Search",
-        "📦 Batch", "⬇️ Download",
-    ])
-    renderers = [
-        tab_text, tab_summary, tab_info, tab_tables, tab_chat,
-        tab_stats, tab_entities, tab_keywords, tab_sentiment,
-        tab_compare, tab_redact, tab_timeline, tab_contacts,
-        tab_alerts, tab_highlights, tab_toc, tab_reading,
-        tab_regex, tab_registry, tab_report, tab_search,
-        tab_batch, tab_export,
-    ]
-    for tab, fn in zip(tabs, renderers):
-        with tab:
-            fn()
+def tab_history():
+    st.markdown("### 📚 Document History")
+    
+    search_query = st.text_input("🔍 Search saved documents (by filename or content)")
+    if search_query:
+        docs = search_documents(search_query)
+    else:
+        docs = get_all_documents()
+
+    if not docs:
+        st.info("No saved documents found. Extract a document and click '💾 Save to Database'.")
+        return
+
+    for doc in docs:
+        with st.expander(f"📄 {doc['filename']} — Saved: {doc['saved_at']}"):
+            st.markdown(f"**Summary:** {doc['summary'][:200] if doc['summary'] else 'No summary'}...")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(f"📂 Load", key=f"load_{doc['id']}"):
+                    full_doc = get_document(doc['id'])
+                    if full_doc:
+                        st.session_state.extracted_text = full_doc['text']
+                        st.session_state.summary = {"summary": full_doc['summary'], "key_points": []}
+                        st.session_state.info = full_doc['info']
+                        st.session_state.stats = full_doc['stats']
+                        st.session_state.filename = full_doc['filename']
+                        
+                        chats = get_chats_for_doc(doc['id'])
+                        st.session_state.chat_history_questions = [
+                            {"question": c['question'], "answers": [(1.0, c['answer'])]} 
+                            for c in chats
+                        ]
+                        st.success(f"Loaded {doc['filename']}!")
+                        st.rerun()
+            with col2:
+                if st.button(f"🗑️ Delete", key=f"del_{doc['id']}", type="secondary"):
+                    delete_document(doc['id'])
+                    st.rerun()
+
+
+def render_sidebar():
+    st.sidebar.title("🧭 Navigation")
+    st.sidebar.markdown("Select a tool:")
+    
+    menu_items = {
+        "📄 Extracted Text": tab_text,
+        "🧠 Summary": tab_summary,
+        "🔎 Structured Info": tab_info,
+        "📊 Tables": tab_tables,
+        "💬 AI Chat": tab_chat,
+        "📈 Statistics": tab_stats,
+        "🧾 Entities": tab_entities,
+        "🔑 Keywords": tab_keywords,
+        "😊 Sentiment": tab_sentiment,
+        "🔀 Compare Docs": tab_compare,
+        "🕵️ Redact PII": tab_redact,
+        "⏱️ Timeline": tab_timeline,
+        "👤 Contacts": tab_contacts,
+        "🚨 Alerts": tab_alerts,
+        "✨ Highlights": tab_highlights,
+        "📚 Outline": tab_toc,
+        "🔊 Listen (TTS)": tab_reading,
+        "🧪 Regex Playground": tab_regex,
+        "📇 Doc Registry": tab_registry,
+        "📄 PDF Report": tab_report,
+        "🔍 Search": tab_search,
+        "📦 Batch Results": tab_batch,
+        "⬇️ Download Data": tab_export,
+        "📚 Document History": tab_history,
+    }
+
+    choice = st.sidebar.radio("Go to:", list(menu_items.keys()))
+    
+    st.write("---")
+    menu_items[choice]()
 
 
 def main():
@@ -723,8 +791,23 @@ def main():
             st.rerun()
 
     render_details()
+    
+    if st.session_state.extracted_text:
+        if st.button("💾 Save to Database", type="secondary"):
+            try:
+                doc_id = save_document(
+                    filename=st.session_state.filename,
+                    text=st.session_state.extracted_text,
+                    summary=st.session_state.summary.get("summary", ""),
+                    info=st.session_state.info,
+                    stats=st.session_state.stats
+                )
+                st.success(f"Saved '{st.session_state.filename}' to database! (ID: {doc_id})")
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
     st.divider()
-    render_tabs()
+    render_sidebar()
 
 
 if __name__ == "__main__":
