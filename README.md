@@ -26,6 +26,7 @@ data → chat with your document → export as TXT / CSV / JSON / PDF report.
 - 🔁 **Duplicate detection** — warns if doc is similar to one you already uploaded
 - 📄 **PDF report** — multi-page downloadable report
 - 📚 **Document History (Database)** — Save extracted text, summaries, and chat history to a local SQLite database. Search, load, and delete old documents.
+- ☁️ **Cloud Database (Supabase)** — Save, search, and load extracted documents and chat histories securely to a PostgreSQL cloud database.
 
 ### AI Chat
 - 💬 **Question answering** — ask anything about the document
