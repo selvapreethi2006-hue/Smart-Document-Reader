@@ -10,3 +10,4 @@ env/
 uploads/
 temp/
 .streamlit/secrets.toml
+.env
