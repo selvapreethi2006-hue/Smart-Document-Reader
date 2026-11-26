@@ -25,6 +25,7 @@ data → chat with your document → export as TXT / CSV / JSON / PDF report.
 - 🚨 **Anomaly alerts** — flags PII, large amounts, expired dates
 - 🔁 **Duplicate detection** — warns if doc is similar to one you already uploaded
 - 📄 **PDF report** — multi-page downloadable report
+- 📚 **Document History (Database)** — Save extracted text, summaries, and chat history to a local SQLite database. Search, load, and delete old documents.
 
 ### AI Chat
 - 💬 **Question answering** — ask anything about the document
