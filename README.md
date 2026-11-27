@@ -4,6 +4,9 @@ An AI-powered document processing application built with **Python + Streamlit**.
 Upload PDFs or images → extract text (OCR for scans) → summarize → extract structured
 data → chat with your document → export as TXT / CSV / JSON / PDF report.
 
+The project now features a **full 3-tier architecture**:
+**Streamlit Frontend (8501) → FastAPI Backend (8000) → Supabase PostgreSQL**.
+
 ## Features
 
 ### Core
@@ -25,8 +28,6 @@ data → chat with your document → export as TXT / CSV / JSON / PDF report.
 - 🚨 **Anomaly alerts** — flags PII, large amounts, expired dates
 - 🔁 **Duplicate detection** — warns if doc is similar to one you already uploaded
 - 📄 **PDF report** — multi-page downloadable report
-- 📚 **Document History (Database)** — Save extracted text, summaries, and chat history to a local SQLite database. Search, load, and delete old documents.
-- ☁️ **Cloud Database (Supabase)** — Save, search, and load extracted documents and chat histories securely to a PostgreSQL cloud database.
 
 ### AI Chat
 - 💬 **Question answering** — ask anything about the document
@@ -34,9 +35,27 @@ data → chat with your document → export as TXT / CSV / JSON / PDF report.
 - 🧠 **Context-aware responses** — recent Q&A boosts related sentences
 - 📑 **Source evidence** — each answer shows page number + snippet
 
+### Backend & Integration
+- ☁️ **Cloud Database (Supabase)** — Save, search, and load extracted documents securely to a PostgreSQL cloud database.
+- 🚀 **FastAPI Backend** — REST API with GET, POST, and DELETE endpoints.
+- 🔗 **Frontend ↔ Backend Integration** — Streamlit communicates with the backend via an API client using HTTP requests.
+
 ## Tech Stack
 
-- **Streamlit** — UI
+### Frontend
+- **Streamlit** — UI and interactive components
+- **requests** — API client for backend communication
+
+### Backend
+- **FastAPI** — REST API framework
+- **Uvicorn** — ASGI web server
+- **Pydantic** — Data validation
+- **python-dotenv** — Environment variables
+
+### Database
+- **Supabase (PostgreSQL)** — Cloud database for storing documents and chat history
+
+### Core Processing
 - **pdfplumber + pypdfium2** — PDF text & tables
 - **RapidOCR + ONNX Runtime** — image OCR (pure pip, no system install)
 - **Pillow + NumPy** — image handling
@@ -48,6 +67,7 @@ data → chat with your document → export as TXT / CSV / JSON / PDF report.
 
 ## Installation
 
+### 1. Install Python Dependencies
 ```powershell
 python -m pip install -r requirements.txt
 python -m textblob.download_corpora
