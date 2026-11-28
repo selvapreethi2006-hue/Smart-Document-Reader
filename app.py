@@ -1,4 +1,4 @@
-"""Smart Document Reader & Data Extractor — Streamlit app (Full v6 with Database)."""
+"""Smart Document Reader & Data Extractor — Streamlit app (v8 Day 12 Fix)."""
 
 import os
 import re
@@ -28,9 +28,10 @@ from modules.smart_highlights import find_highlights, highlights_to_csv
 from modules.doc_registry import add_to_registry, find_duplicates, clear_registry
 from modules.regex_playground import run_regex, COMMON_PATTERNS
 from modules.toc_detector import detect_toc
-from modules.database import (
-    save_document, save_chat, get_all_documents,
-    get_document, get_chats_for_doc, search_documents, delete_document
+
+from modules.api_client import (
+    api_get_documents, api_get_document,
+    api_save_document, api_delete_document, api_health_check
 )
 
 ALLOWED_TYPES = ["pdf", "jpg", "jpeg", "png"]
@@ -143,6 +144,7 @@ def run_single(uploaded):
             return
     if not result["text"].strip():
         st.warning("No text was extracted. The file may be blank.")
+        return  # <-- DAY 12 BUG FIX
     _apply_result(uploaded.name, result)
 
 
@@ -316,14 +318,6 @@ def tab_chat():
                 "question": question,
                 "answers": [(a["score"], a["sentence"]) for a in evidence],
             })
-            # Auto-save chat to DB if document exists
-            try:
-                docs = get_all_documents()
-                current_doc = next((d for d in docs if d['filename'] == st.session_state.filename), None)
-                if current_doc:
-                    save_chat(current_doc['id'], question, content)
-            except Exception:
-                pass
 
         st.session_state.chat_messages.append({
             "role": "assistant", "content": content, "evidence": evidence,
@@ -695,44 +689,69 @@ def tab_export():
 
 
 def tab_history():
-    st.markdown("### 📚 Document History")
-    
-    search_query = st.text_input("🔍 Search saved documents (by filename or content)")
-    if search_query:
-        docs = search_documents(search_query)
-    else:
-        docs = get_all_documents()
+    st.markdown("### 📚 Document History (via Backend API)")
 
-    if not docs:
-        st.info("No saved documents found. Extract a document and click '💾 Save to Database'.")
+    if not api_health_check():
+        st.warning(
+            "⚠️ Backend is not reachable at http://127.0.0.1:8000. "
+            "Start it in another terminal: `uvicorn backend.main:app --reload`"
+        )
         return
 
+    col_search, col_refresh = st.columns([3, 1])
+    with col_search:
+        search_query = st.text_input("🔍 Search saved documents", "")
+    with col_refresh:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Refresh"):
+            st.rerun()
+
+    with st.spinner("Fetching documents from backend…"):
+        docs = api_get_documents()
+
+    if not docs:
+        st.info("No saved documents found. Extract a document and click "
+                "**💾 Save via Backend API**.")
+        return
+
+    if search_query:
+        docs = [d for d in docs
+                if search_query.lower() in (d.get("filename") or "").lower()]
+
+    st.caption(f"**{len(docs)} document(s) loaded from API**")
+
     for doc in docs:
-        with st.expander(f"📄 {doc['filename']} — Saved: {doc['saved_at']}"):
-            st.markdown(f"**Summary:** {doc['summary'][:200] if doc['summary'] else 'No summary'}...")
-            
+        with st.expander(f"📄 {doc['filename']} — {doc['saved_at']}"):
+            st.markdown(f"**Summary:** "
+                        f"{(doc.get('summary') or 'No summary')[:250]}…")
+
             col1, col2 = st.columns(2)
             with col1:
-                if st.button(f"📂 Load", key=f"load_{doc['id']}"):
-                    full_doc = get_document(doc['id'])
-                    if full_doc:
-                        st.session_state.extracted_text = full_doc['text']
-                        st.session_state.summary = {"summary": full_doc['summary'], "key_points": []}
-                        st.session_state.info = full_doc['info']
-                        st.session_state.stats = full_doc['stats']
-                        st.session_state.filename = full_doc['filename']
-                        
-                        chats = get_chats_for_doc(doc['id'])
-                        st.session_state.chat_history_questions = [
-                            {"question": c['question'], "answers": [(1.0, c['answer'])]} 
-                            for c in chats
-                        ]
-                        st.success(f"Loaded {doc['filename']}!")
+                if st.button(f"📂 Load this document",
+                             key=f"load_{doc['id']}"):
+                    with st.spinner("Loading full document via API…"):
+                        full = api_get_document(doc["id"])
+                    if full:
+                        st.session_state.extracted_text = full["text"]
+                        st.session_state.summary = {
+                            "summary": full.get("summary", ""),
+                            "key_points": [],
+                        }
+                        st.session_state.info = full.get("info") or {}
+                        st.session_state.stats = full.get("stats") or {}
+                        st.session_state.filename = full["filename"]
+                        st.success(f"Loaded '{full['filename']}' via API ✅")
                         st.rerun()
             with col2:
-                if st.button(f"🗑️ Delete", key=f"del_{doc['id']}", type="secondary"):
-                    delete_document(doc['id'])
-                    st.rerun()
+                if st.button(f"🗑️ Delete via API",
+                             key=f"del_{doc['id']}",
+                             type="primary"):
+                    with st.spinner("Deleting via API…"):
+                        ok = api_delete_document(doc["id"])
+                    if ok:
+                        st.success(f"Deleted '{doc['filename']}' ✅")
+                        st.rerun()
 
 
 def render_sidebar():
@@ -793,18 +812,21 @@ def main():
     render_details()
     
     if st.session_state.extracted_text:
-        if st.button("💾 Save to Database", type="secondary"):
-            try:
-                doc_id = save_document(
+        if st.button("💾 Save via Backend API", type="secondary"):
+            with st.spinner("Sending document to backend API…"):
+                res = api_save_document(
                     filename=st.session_state.filename,
                     text=st.session_state.extracted_text,
                     summary=st.session_state.summary.get("summary", ""),
                     info=st.session_state.info,
-                    stats=st.session_state.stats
+                    stats=st.session_state.stats,
                 )
-                st.success(f"Saved '{st.session_state.filename}' to database! (ID: {doc_id})")
-            except Exception as e:
-                st.error(f"Failed to save: {e}")
+            if res:
+                new_id = (res.get("data") or {}).get("id")
+                st.success(
+                    f"✅ '{st.session_state.filename}' saved via backend! "
+                    f"(ID: {new_id})"
+                )
 
     st.divider()
     render_sidebar()

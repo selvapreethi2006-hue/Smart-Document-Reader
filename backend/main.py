@@ -36,6 +36,17 @@ class ChatCreate(BaseModel):
     answer: str
 
 
+# ---------- Helper ----------
+
+def _safe_json(data: dict) -> str:
+    """Safely convert dictionary to JSON string, handling non-serializable types."""
+    try:
+        return json.dumps(data)
+    except TypeError:
+        # Fallback to string representation if it contains weird types (like numpy)
+        return json.dumps(data, default=str)
+
+
 # ---------- Routes ----------
 
 @app.get("/")
@@ -75,12 +86,13 @@ def create_document(doc: DocumentCreate):
             "filename": doc.filename,
             "text": doc.text,
             "summary": doc.summary,
-            "info": json.dumps(doc.info),
-            "stats": json.dumps(doc.stats),
+            "info": _safe_json(doc.info),
+            "stats": _safe_json(doc.stats),
         }
         res = supabase.table("documents").insert(payload).execute()
         return {"status": "success", "data": res.data[0]}
     except Exception as e:
+        print(f"BACKEND ERROR: {e}")  # Prints to uvicorn terminal for debugging
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -95,6 +107,7 @@ def create_chat(chat: ChatCreate):
         res = supabase.table("chat_history").insert(payload).execute()
         return {"status": "success", "data": res.data[0]}
     except Exception as e:
+        print(f"BACKEND ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
